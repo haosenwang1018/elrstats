@@ -127,6 +127,17 @@ Status tags: **fixed**, **open**, **worked around**.
 ### E3. Claims from critics need checking
 - A critic reported that torch 2.13 `clip_grad_norm_` fails on a 2-D mesh test. We did not reproduce this in isolation, so we make no claim about it.
 
+### E4. Wrong model-size label — fixed
+- **Seen:** Docs called the model "GPT-124M". It has 113M block parameters and 191M in total.
+- **Cause:** We copied GPT-2-small's name. Our model has a SwiGLU MLP and an untied embedding and head, over a vocab padded to 50304.
+- **Fix:** Counted the parameters from `study/train.py`. Docs and benchmark configs are now named by shape (`l12-d768`).
+- **Lesson:** Count the parameters from the code. Do not name a model after a known one.
+
+### E5. A subagent wrote a host name into a public file — fixed
+- **Seen:** On merge, PITFALLS D1 named the GPU host and a run path.
+- **Fix:** Replaced them with the hardware description before the push.
+- **Lesson:** Run the privacy grep on every merge, not only on the first release.
+
 ## G. Found in the pre-release review (2026-10-29)
 Four reviewers read the repo before it was made public. Fixed:
 - **G1. Bad labels were silent.** `LogicalSpec` with a label ≥ `n_sub`, or a label count that did not match the global size, dropped or misplaced rows without error. Now both raise.
