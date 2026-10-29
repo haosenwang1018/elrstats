@@ -99,7 +99,7 @@ Data: FineWeb-edu 10B tokenized with GPT-2, in the modded-nanoGPT `.bin` format 
 |---|---|
 | `elrstats/stats.py` | The library |
 | `tests/test_stats_dist.py` | Distributed correctness tests |
-| `bench/bench_stats.py` | Cost benchmark (**currently hangs on NCCL**, see PITFALLS D1) |
+| `bench/bench_stats.py` | Cost benchmark (~8 min on 2 or 8 A100s; numbers in PITFALLS D1) |
 | `study/` | Trainer, launcher, analysis, health watcher |
 | `study/blog/` | Scripts for the blog figures and extra analyses (need `results/runs/` from the release) |
 | `design/study.md` | Pre-registered experiment design and criteria |
