@@ -1,4 +1,4 @@
-# Experiment: ELR measurement study (GPT-124M, FineWeb-edu)
+# Experiment: ELR measurement study (12-layer d=768 GPT, FineWeb-edu)
 
 Parent: `../DESIGN.md` (Goal 4). This file is the contract for the runs and for the hourly watcher.
 
@@ -12,13 +12,13 @@ Measure, in real pretraining, how far the per-matrix **effective** learning rate
 
 ## Non-goals
 - Which optimizer or schedule gives lower loss. Loss only has to be healthy.
-- Large scale. 124M only; no claim about transfer to larger models.
+- Large scale. One model size only (12 layers, d=768; 113M block / 191M total parameters); no claim about transfer to larger models.
 - Controlling ELR (relative update / Hyperball). That is a later experiment.
 
 ## Constraints
 - Hard: one 8×A100-PCIE-40GB host, one run per GPU. Compute time is limited.
 - Hard: ~1.06B usable training tokens (the train shards are truncated downloads).
-- Soft (our choice): all runs finish in ≤ 6 h; 124M model; 25,000 steps × 32,768 tokens ≈ 0.82B tokens (~0.8 epoch, random windows).
+- Soft (our choice): all runs finish in ≤ 6 h; 12-layer, d=768 model (113M block / 191M total parameters); 25,000 steps × 32,768 tokens ≈ 0.82B tokens (~0.8 epoch, random windows).
 - Soft: one seed per config in batches 1–2. Batch 3 adds a second seed for four configs, so seed noise is measured only for those.
 
 ## Acceptance criteria (the experiment counts as done and usable)
@@ -31,7 +31,7 @@ Measure, in real pretraining, how far the per-matrix **effective** learning rate
 Note: batch 1 was launched before this doc was reviewed. The review (see Log) changed the Q1 base step, the Q2 share, the Q3a formulas and the Q4 spread measure while batch 1 was running, before any final result was read.
 | Q | Supported if | Not supported if → what it means |
 |---|---|---|
-| 1 | In `const` runs, median ELR at 95% of training is < 1/2 of its value at step 2000 (also reported vs step 300, but step 300 sits on the early ELR spike, so it is not the criterion). The clean test is the `const` + WD 0 pair (batch 2). | ≥ 1/2 → implicit decay is weak at this scale/horizon; "Hyperball = implicit schedule" is not visible at 124M. Report as negative. |
+| 1 | In `const` runs, median ELR at 95% of training is < 1/2 of its value at step 2000 (also reported vs step 300, but step 300 sits on the early ELR spike, so it is not the criterion). The clean test is the `const` + WD 0 pair (batch 2). | ≥ 1/2 → implicit decay is weak at this scale/horizon; "Hyperball = implicit schedule" is not visible at this model size. Report as negative. |
 | 2 | In `linear` runs, implicit share ≥ 25% at 50% of training, base step 2000. Share = \|Δlog‖U‖ − Δlog‖W‖\| / (\|that\| + \|Δlog η\|), sign reported separately (the two parts can cancel). | < 25% → nominal ≈ effective in practice here. |
 | 3a | `const` + WD: median AUS (from the three sums) over the last 10% within 2× of a published prediction. Report both √(2ηλ) and Kosson's √(2ηλ(1−β₁)/(1+β₁)); they differ 4.4×, so at most one can pass. | Off by > 2× → not at equilibrium in this horizon, or formula does not fit; report the ratio. |
 | 3b | 4× lr gives ELR ratio between 1.5× and 3× at 70/80/90% of training. Primary: the `const` pair (batch 2); the `linear` pair is secondary (η → 0 late). | ≈ 4× → no compression yet (norms not at equilibrium). |
@@ -66,5 +66,5 @@ Note: batch 1 was launched before this doc was reviewed. The review (see Log) ch
 - 2026-10-29 — 4 critics (code, design, analysis, red team): all "keep runs". Changes: (1) `aus_true` in batch 1 has fp32 cancellation → use the three-sum AUS; batch 2 logs ⟨W,ΔW⟩ and RMSNorm gain norms. (2) Q1 base moved to step 2000 (step 300 is on the early spike). (3) Q2 share redefined (stable under cancellation). (4) Q3a: report both formulas. (5) Q3b and Q1 need clean pairs → batch 2 queued (const + WD 0; const lr 2.4e-3). (6) Q4 within-type spread. (7) Added joint-symmetry balance ‖Wq‖²−‖Wk‖² etc. (Su 11985). Known limitation: RMSNorm gains also get WD; model has no QK-norm, so matrices are not scale-invariant. Red team: early ELR spike, √(2ηλ) equilibrium and per-matrix differences are reproductions; the implicit-share decomposition and q/k/v split are the likely new parts.
 - 2026-10-29 — Batch 1 (8 runs) DONE. Batch 2 first launch failed at step 0: my edit reused the name `a` (the args object) for a stats sum. Fixed, smoke-tested (60 steps), relaunched together with batch 3 (seeds).
 - 2026-10-29 — Incident: `launch.sh` started batch 1 whenever the flag was not `batch2`, so the `batch3` call re-queued all 8 batch-1 runs; 4 of them ran ~250 steps and appended to batch 1's logs. Killed within ~3 min; batch-1 logs restored from the local copy pulled before the relaunch (1001 records each, steps monotonic, verified). Guard fixed: batch 1 only runs with no flag.
-- 2026-10-29 — All 16 runs DONE (batches 1–3). Seed noise ≤ 0.004 loss, ≤ 3% on ELR numbers. Q1 supported on the clean no-WD test (ELR ×0.34 at flat nominal lr); Q2, Q3a (Kosson AdamW formula within 0.4%/5%), Q3b (ELR ratio = 2.0 for 4× lr), Q5 supported; Q4 mostly not supported at 124M. Report: `results/final/REPORT.md`. Watcher cron deleted.
+- 2026-10-29 — All 16 runs DONE (batches 1–3). Seed noise ≤ 0.004 loss, ≤ 3% on ELR numbers. Q1 supported on the clean no-WD test (ELR ×0.34 at flat nominal lr); Q2, Q3a (Kosson AdamW formula within 0.4%/5%), Q3b (ELR ratio = 2.0 for 4× lr), Q5 supported; Q4 mostly not supported at this model size. Report: `results/final/REPORT.md`. Watcher cron deleted.
 - 2026-10-29 — Pre-release review: the final report's Q4 verdict ("mostly not supported") did not follow the rule above. Re-checked run by run: Q4 is mixed (passes in no-WD runs, fails with WD); Q5 fails the |cos| rule in the two 4× lr runs. Report corrected; see `PITFALLS.md` G6.

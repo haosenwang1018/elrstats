@@ -9,8 +9,8 @@
 ## Goals
 1. **Library `elrstats` (monitor first).** Per logical matrix: s_ww, s_uu, s_wu with ONE all-reduce per step over the world group; ELR, cos(w,u), AUS derived in fp64. Supports DTensor (Shard, `_StridedShard`, Replicate; Partial rejected), manual TP shards, empty/uneven shards, and `LogicalSpec` (labels along one dim) for fused QKV / gate-up / MoE experts.
 2. **Correctness evidence.** Tests vs. an unsharded fp64 reference: 1-D Shard(0)/Shard(1)/Replicate, real FSDP2×TP (2×2, 2×4), interleaved GQA QKV, 3-D MoE expert-parallel, manual TP rows; fp32 and bf16; gloo (CPU) and NCCL (8×A100 PCIe).
-3. **Cost evidence (expected: negligible; reported honestly).** Micro-benchmark vs. strong baselines (NVIDIA-hook logic on DTensor, per-matrix all-reduce, `_coalescing_manager`, DTensor-native batched `stack(...).full_tensor()`), plus end-to-end FSDP2 step time at 124M/350M.
-4. **Measurement study (the main result).** Train GPT-124M on FineWeb-edu with AdamW and Muon (standard schedules), log per-logical-matrix ELR every few steps. Questions: how different are layers and q/k/v; how much of the ELR decay is implicit (‖w‖ growth) versus scheduled; does a whole-fused-matrix ELR hide the k-ELR.
+3. **Cost evidence (expected: negligible; reported honestly).** Micro-benchmark vs. strong baselines (NVIDIA-hook logic on DTensor, per-matrix all-reduce, `_coalescing_manager`, DTensor-native batched `stack(...).full_tensor()`), plus end-to-end FSDP2 step time at the 12-layer d=768 and 24-layer d=1024 shapes.
+4. **Measurement study (the main result).** Train a 12-layer, d=768 GPT-style model (113M block parameters, 191M total) on FineWeb-edu with AdamW and Muon (standard schedules), log per-logical-matrix ELR every few steps. Questions: how different are layers and q/k/v; how much of the ELR decay is implicit (‖w‖ growth) versus scheduled; does a whole-fused-matrix ELR hide the k-ELR.
 5. **Real-world counterexample (stretch).** A real training run where local-norm relative-update / Hyperball under manual TP (or whole-fused-matrix ELR) visibly diverges from the reference.
 
 ## Non-goals
@@ -30,7 +30,7 @@
 - Hard: one 8×A100-PCIE-40GB host (PHB, no NVLink); two extra 2×A100 PCIe hosts. Jobs via `expq` (task-spooler wrapper). torch 2.13.0+cu130.
 - Hard: no NVLink → absolute cost numbers are PCIe-specific.
 - Hard: compute time on the 8-GPU host is limited.
-- Soft: 124M scale for the study tonight; larger later.
+- Soft: 12-layer, d=768 scale (113M block / 191M total parameters) for the study tonight; larger later.
 
 ## Related work (declared in discussion)
 - Su Jianlin, 《从参数对称性到有效学习率》 — https://kexue.fm/archives/11985 (2026-10-27).
@@ -50,6 +50,7 @@
 - 2026-10-29 — Project started (user decision): sharding correctness and cost of per-matrix stats, not a new optimizer. Source: discussion + scoping agent.
 - 2026-10-29 — 10-critic review changed the goals. Reasons: (1) DTensor `vector_norm` is globally correct in torch 2.13; NVIDIA hook on DTensor is correct, only costs ~4 collectives per matrix (critics 1, 3, 4, 8, 10, verified). (2) Packed one-reduce norm logging already exists in OLMo / Levanter (critic 7, verified). (3) Real bugs found in the first design: `_StridedShard` not detected (36% error, silent), per-mesh-dim grouping wrong on 2-D meshes (critics 1, 3). (4) Fused QKV / MoE need logical sub-matrices; whole-param norm hides k (critic 6). (5) AUS must be computed in fp64 with atan2 (critic 5). (6) Megatron does not yet pass `weight_update_hook` to TP Muon, so the local-norm TP bug has no real victim today; `muon_hyperball` under TP is the reachable path (critic 4). → Goals rewritten: monitor library with logical sub-matrices + measurement study is the main result; correctness/cost become supporting evidence.
 - 2026-10-29 — Tests: all cases pass on NCCL world 2/4/8 (8×A100 PCIe), errors ≤ 2e-7 (fp32 and bf16). On CPU gloo, bf16 cases show ~1e-5 from CPU fp32 accumulation, not sharding. In the constructed GQA case (k scaled 0.1×), k's ELR is 4.1× the whole-fused-matrix ELR. Manual-TP local-norm scale (NVIDIA logic) gives 0.65–0.93 update error when shard update norms differ 10× (constructed; real size unknown).
-- 2026-10-29 — Goal 4 measurement study finished (16 runs). Main results in `results/final/REPORT.md`. Logical sub-matrices (q/k/v) show little effect at 124M, which weakens Goal 1's sub-matrix selling point at this scale; the measurement results are the stronger output.
+- 2026-10-29 — Goal 4 measurement study finished (16 runs). Main results in `results/final/REPORT.md`. Logical sub-matrices (q/k/v) show little effect at this model size (12 layers, d=768), which weakens Goal 1's sub-matrix selling point at this scale; the measurement results are the stronger output.
 - 2026-10-29 — User decision: open-source the code and record every pitfall. Added `PITFALLS.md`. Host names, SSH routes and personal names removed from this doc and the scripts before publishing.
 - 2026-10-29 — Pre-release review by 4 agents (privacy, code, claims, newcomer view). Fixed: label validation, negative dim, async return type, macOS test, benchmark hang guard, and overclaims in the report (Q4 is mixed, not negative). The sub-matrix selling point of Goal 1 is weaker with WD, but real without WD. Details in `PITFALLS.md` G.
+- 2026-10-30 — Model-size label corrected: "GPT-124M" was wrong. The study model (study/train.py) has SwiGLU MLP (hidden 4d) and an untied embedding/head over a 50304-padded vocab, so it has 113.3M block parameters and 190.5M total, not GPT-2-small's 124M. All docs now say "12-layer, d=768 GPT-style model (113M block / 191M total parameters)"; benchmark configs are named by shape. Added `study/blog/` (blog figure and extra-analysis scripts).

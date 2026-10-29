@@ -1,4 +1,4 @@
-# Final results: ELR measurement study (16 runs, GPT-124M, 25k steps, 0.82B tokens) — 2026-10-29
+# Final results: ELR measurement study (16 runs, 12-layer d=768 GPT (113M block / 191M total params), 25k steps, 0.82B tokens) — 2026-10-29
 
 Criteria were fixed in advance in `../../design/study.md`. Numbers come from `summary.json`. The main figure for a blog is `fig5_nominal_vs_elr_normalized.png`: nominal lr and median ELR on one log axis, both normalized to step 2000.
 
@@ -25,11 +25,11 @@ Seed differences are ≤ 0.004 in loss and ≤ 3% on the Q1, Q2 and Q3a numbers.
 
 ## What this means for the blog
 - Reproduced: early ELR spike, then a long implicit decay; Kosson's AdamW equilibrium formula; ELR ratio ≈ √η ratio at equilibrium.
-- Likely new: the implicit-share decomposition (η vs ‖U‖ vs ‖W‖) for AdamW and Muon in one setup, with seed error bars; and the clean "constant nominal lr, no WD → 3× ELR decay" number. The q/k/v split is mixed at 124M: it matters without WD, mostly not with WD.
-- Practical message: at 124M, a nominal "constant" schedule is really a ~2–3× decaying ELR schedule, and in const + WD runs 4× the nominal lr gave only about 2× the ELR.
+- Likely new: the implicit-share decomposition (η vs ‖U‖ vs ‖W‖) for AdamW and Muon in one setup, with seed error bars; and the clean "constant nominal lr, no WD → 3× ELR decay" number. The q/k/v split is mixed at this model size: it matters without WD, mostly not with WD.
+- Practical message: at this model size, a nominal "constant" schedule is really a ~2–3× decaying ELR schedule, and in const + WD runs 4× the nominal lr gave only about 2× the ELR.
 
 ## Limits
 - Criteria: the runs were launched before the criteria were reviewed. The review changed the Q1 base step, the Q2 share definition, the Q3a formulas and the Q4 spread measure before any final results were read (see `design/study.md`, Log).
-- 124M only, 0.82B tokens (~6.6 tokens/param). No QK-norm. RMSNorm gains also get WD.
+- One model size only (12 layers, d=768; 113M block / 191M total parameters), 0.82B tokens (~7.2 tokens per block parameter, ~4.3 per total parameter). No QK-norm. RMSNorm gains also get WD.
 - Batch-1 `aus_true` has fp32 cancellation; angle results use the three-sum AUS (exact algebra). Batch 2/3 log ⟨W,ΔW⟩ for a cancellation-free angle.
 - AdamW lr 2.4e-3 linear was unstable (val 4.28); its ‖Wq‖² − ‖Wk‖² grew to 1154. [推断] attention-logit growth without QK-norm.

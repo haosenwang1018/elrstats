@@ -1,4 +1,4 @@
-"""GPT-124M on FineWeb-edu, single GPU, logging per-logical-matrix ELR.
+"""12-layer, d=768 GPT-style model (113M block / 191M total params) on FineWeb-edu, single GPU, logging per-logical-matrix ELR.
 
 Every --log-every steps it records, for each logical matrix (q/k/v split out of
 the fused qkv weight):

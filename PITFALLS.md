@@ -24,7 +24,7 @@ Status tags: **fixed**, **open**, **worked around**.
 ### A4. Whole fused-matrix norm hides a sub-matrix — fixed by `LogicalSpec`
 - **Seen:** In a constructed GQA case (k scaled 0.1×), k's ELR is 4.1× the ELR of the whole fused QKV.
 - **Fix:** `LogicalSpec(dim, labels, names)` gives per-label sums with `index_add_`.
-- **Note:** In real 124M training this effect was small (only layer 0). See `results/final/REPORT.md`, Q4.
+- **Note:** In real training of the 12-layer, d=768 study model this effect was small (only layer 0). See `results/final/REPORT.md`, Q4.
 
 ### A5. Local-norm relative update under manual TP — demonstrated, not ours
 - NVIDIA-style hooks compute norms on the local tensor. Under manual (Megatron-style) TP rows, this gives a 0.65–0.93 update error in a constructed case where shard norms differ 10×. The real size in production is unknown.

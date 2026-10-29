@@ -12,9 +12,9 @@ Recent posts argue that ELR, not η, is the step size that drives training
 This repo has two parts:
 
 1. **`elrstats`**, a small library. It computes ‖W‖², ‖U‖² and ⟨W,U⟩ for every matrix with **one all-reduce per step**. It is correct under FSDP2, TP and FSDP2×TP. It can also split a fused matrix into logical sub-matrices (q/k/v inside a fused QKV, one expert inside a 3-D MoE weight).
-2. **A measurement study.** 16 runs of GPT-124M on FineWeb-edu (AdamW and Muon, 25k steps each) that log per-matrix ELR every 25 steps.
+2. **A measurement study.** 16 runs of a 12-layer, d=768 GPT-style model (113M block parameters, 191M total) on FineWeb-edu (AdamW and Muon, 25k steps each) that log per-matrix ELR every 25 steps.
 
-## Main results (GPT-124M, 0.82B tokens)
+## Main results (12-layer, d=768 GPT; 0.82B tokens)
 
 Full report: [`results/final/REPORT.md`](results/final/REPORT.md). Two seeds for four configs: seed noise is ≤ 0.004 in loss and ≤ 3% on the Q1–Q3a numbers below. Per-layer numbers vary more.
 
@@ -93,6 +93,7 @@ Data: FineWeb-edu 10B tokenized with GPT-2, in the modded-nanoGPT `.bin` format 
 | `tests/test_stats_dist.py` | Distributed correctness tests |
 | `bench/bench_stats.py` | Cost benchmark (**currently hangs on NCCL**, see PITFALLS D1) |
 | `study/` | Trainer, launcher, analysis, health watcher |
+| `study/blog/` | Scripts for the blog figures and extra analyses (need `results/runs/` from the release) |
 | `design/study.md` | Pre-registered experiment design and criteria |
 | `DESIGN.md` | Project goals and decision log |
 | `PITFALLS.md` | Every bug, incident and process mistake, with fixes |
@@ -100,7 +101,7 @@ Data: FineWeb-edu 10B tokenized with GPT-2, in the modded-nanoGPT `.bin` format 
 
 ## Status and limits
 
-- 124M only, 0.82B tokens, no QK-norm, RMSNorm gains get weight decay.
+- One model size only (12 layers, d=768; 113M block parameters, 191M total), 0.82B tokens, no QK-norm, RMSNorm gains get weight decay.
 - The runs were launched before the criteria in `design/study.md` were reviewed; the changes are listed in its Log.
 - No cost numbers yet: the benchmark hang is open.
 - The Muon equilibrium value is measured, not derived.

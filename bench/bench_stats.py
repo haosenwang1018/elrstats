@@ -122,7 +122,9 @@ class GPT(nn.Module):
         return F.cross_entropy(self.head(self.norm(x)).float().flatten(0, 1), idx.roll(-1, 1).flatten())
 
 
-CONFIGS = {"124m": (12, 768, 12), "350m": (24, 1024, 16), "760m": (24, 1536, 16)}
+# Named by shape (layers, width), not by parameter count: with SwiGLU 4d and untied 50304-vocab
+# embedding/head, "l12-d768" is 113M block / 191M total parameters, not GPT-2-small's 124M.
+CONFIGS = {"l12-d768": (12, 768, 12), "l24-d1024": (24, 1024, 16), "l24-d1536": (24, 1536, 16)}
 
 
 # ---------------------------------------------------------------- timing
@@ -217,7 +219,7 @@ def main():
     ap.add_argument("--micro-n", type=int, nargs="+", default=[10, 50, 150, 400, 1000])
     ap.add_argument("--iters", type=int, default=200)
     ap.add_argument("--warmup", type=int, default=20)
-    ap.add_argument("--models", nargs="+", default=["124m", "350m"])
+    ap.add_argument("--models", nargs="+", default=["l12-d768", "l24-d1024"])
     ap.add_argument("--e2e-iters", type=int, default=50)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--seq", type=int, default=1024)
