@@ -119,5 +119,5 @@ Four reviewers read the repo before it was made public. Fixed:
 
 ## F. Still open
 - D1 benchmark hang (no cost numbers yet).
-- Muon equilibrium formula: Kosson's form with β = 0.95 gives 13% below the measured AUS. Not derived.
+- Muon equilibrium formula: partly resolved (2026-10-30, `analysis/muon_equilibrium.md`). AUS ≈ √((2ηλ + δ)/(1 + 2k)), k = −cos(W,U)/ELR = Σ_d C(d) (update autocorrelation); δ = per-step growth of ln‖W‖². Of the 13% gap to Kosson's β = 0.95 form, Nesterov weights (1 + 2k = 32.9, not 39) explain ~8 points. The rest: at 6e-4, non-equilibrium (δ/2ηλ = 0.09, +4%); at 2.4e-3, a weaker lean (k = 14.0, not 15.95, +6.5%). With measured k and δ the identity closes to 0.3%. Still open: why k is below the linear model. A white-noise toy shows NS5 lowers k (13.5 at 128×384, 11.0 square); real gradients partly cancel this, and k falls with η for AdamW too.
 - Megatron's rank-local `[gate_r; up_r]` layout is not covered by `LogicalSpec`.
