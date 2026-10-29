@@ -148,6 +148,42 @@ def worker(rank, world, backend, port, q):
         "nvidia_local_scale_max_rel_err": f"{err.item():.2e}",
         "nvidia_update_rel_err": f"{(num / den).sqrt().item():.2e}"}))
 
+    # Megatron fused GLU fc1: rank r stores [gate_r; up_r] (tools/checkpoint/saver_base.py).
+    # Reference is built from the separate dense gate and up matrices, not from labels.
+    def megatron_fc1(gate, up, tp):
+        return torch.cat([torch.cat([a, b]) for a, b in zip(gate.chunk(tp), up.chunk(tp))])
+
+    for tp, ffn in [(world, 6 * world), (3, 30)]:  # tp=3: world shards cut inside gate/up blocks
+        gate = torch.randn(ffn, 16, generator=g)
+        up = torch.randn(ffn, 16, generator=g) * torch.linspace(0.05, 0.2, ffn)[:, None]
+        wg = megatron_fc1(gate, up, tp)
+        ref = reference_stats([gate, up], [upd_fn(gate), upd_fn(up)])
+        gspec = LogicalSpec.megatron_glu(ffn, tp)
+        naive = LogicalSpec(dim=0, labels=[0] * ffn + [1] * ffn, names=["gate", "up"])
+        naive_err = (reference_stats([wg], [upd_fn(wg)], [naive]).w2 / ref.w2 - 1).abs().max().item()
+        for tag, pl in [("shard0", [Shard(0)]), ("shard1", [Shard(1)])]:
+            p = distribute_tensor(wg.to(dev), init_device_mesh(dev_type, (world,)), pl)
+            u = distribute_tensor(upd_fn(wg).to(dev), p.device_mesh, pl)
+            st = matrix_stats(StatsLayout([ParamEntry("fc1", p, spec=gspec)]), [u])
+            res.append(compare(f"megatron_glu_tp{tp}_{tag}_w{world}", st, ref,
+                               {"naive_global_labels_w2_rel_err": f"{naive_err:.2e}"} if tp > 1 else None))
+        if tp == world:  # manual TP: local tensors, offset = rank * 2*ffn/tp
+            rows = 2 * ffn // tp
+            w_sh = wg[rank * rows:(rank + 1) * rows].to(dev)
+            entry = ParamEntry("fc1", w_sh, spec=gspec, tp_dim=0, tp_offset=rank * rows, tp_global=2 * ffn, tp_size=tp)
+            st = matrix_stats(StatsLayout([entry]), [upd_fn(w_sh)])
+            res.append(compare(f"megatron_glu_manual_tp{tp}_w{world}", st, ref))
+    if rank == 0:  # 1-process checks of the label builder
+        assert LogicalSpec.megatron_glu(4, 1).labels.tolist() == [0] * 4 + [1] * 4
+        assert LogicalSpec.megatron_glu(4, 2).labels.tolist() == [0, 0, 1, 1, 0, 0, 1, 1]
+        assert LogicalSpec.blocked(0, [1, 2], ["a", "b"], 2).labels.tolist() == [0, 1, 1, 0, 1, 1]
+        for bad in [lambda: LogicalSpec.megatron_glu(5, 2), lambda: LogicalSpec.blocked(0, [1], ["a", "b"])]:
+            try:
+                bad()
+                raise AssertionError("expected ValueError")
+            except ValueError:
+                pass
+
     if rank == 0:
         q.put(res)
     dist.barrier()

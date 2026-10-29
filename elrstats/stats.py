@@ -67,6 +67,31 @@ class LogicalSpec:
     def n_sub(self) -> int:
         return len(self.names)
 
+    @classmethod
+    def blocked(cls, dim: int, sizes: Sequence[int], names: Sequence[str], repeats: int = 1) -> "LogicalSpec":
+        """Labels for a pattern of contiguous blocks, tiled `repeats` times.
+
+        Block j has sizes[j] rows and label j. Example: sizes=[k, k], repeats=tp
+        gives [0]*k + [1]*k + [0]*k + [1]*k + ... (tp times).
+        """
+        if len(sizes) != len(names) or repeats < 1 or min(sizes, default=0) < 0:
+            raise ValueError("need one non-negative size per name and repeats >= 1")
+        block = torch.repeat_interleave(torch.arange(len(sizes)), torch.as_tensor(sizes, dtype=torch.int64))
+        return cls(dim=dim, labels=block.repeat(repeats), names=names)
+
+    @classmethod
+    def megatron_glu(cls, ffn: int, tp: int, dim: int = 0, names: Sequence[str] = ("gate", "up")) -> "LogicalSpec":
+        """Megatron-LM fused GLU `linear_fc1` weight (or bias), global rows = 2*ffn.
+
+        Megatron stores [gate_r; up_r] on each TP rank r, so the concatenation of
+        the TP shards is [gate_0; up_0; gate_1; up_1; ...] with blocks of ffn/tp
+        rows. `tp` is the TP size the weight was BUILT with; the labels describe
+        that global order, so any later Shard/FSDP split of it is still correct.
+        """
+        if ffn % tp:
+            raise ValueError(f"ffn={ffn} not divisible by tp={tp}")
+        return cls.blocked(dim, [ffn // tp] * 2, names, repeats=tp)
+
 
 @dataclass
 class ParamEntry:
