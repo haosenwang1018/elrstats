@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.DS_Store
+# Raw per-run logs (~220 MB) are published as a release asset, not in git.
+results/runs/
+results/partial/
