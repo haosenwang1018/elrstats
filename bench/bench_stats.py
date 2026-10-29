@@ -7,11 +7,13 @@ Two parts:
          style per-matrix stats / DTensor-native batched / ours (one packed
          all-reduce), every step.
 
-KNOWN TO HANG (PITFALLS.md, D1): on 8 and 2 A100s it ran at 100% GPU with no
-output and was killed; the cause is not found. It refuses to start unless you
-pass --i-know-it-hangs, and it sets a 10-minute NCCL timeout.
+Not a hang (PITFALLS.md, D1): the old fixed 200 iters made nvidia_hook_dtensor
+at 1000 matrices take ~8 min alone (~2.2 s per call), with no output. Now each
+stage prints flushed progress and gets about --budget-s seconds; the iteration
+count is agreed across ranks (MAX of the probe time), so collectives stay in
+step. A 10-minute NCCL timeout stays as a safety net. ~7-9 min on 2 or 8 A100s.
 
-Run: python bench/bench_stats.py --world 8 --out results/bench_w8.json --i-know-it-hangs
+Run: python bench/bench_stats.py --world 8 --out results/bench_w8.json
 """
 
 import argparse
@@ -126,12 +128,38 @@ CONFIGS = {"124m": (12, 768, 12), "350m": (24, 1024, 16), "760m": (24, 1536, 16)
 
 
 # ---------------------------------------------------------------- timing
-def cuda_time(fn, iters, warmup):
-    for _ in range(warmup):
+def log(msg):
+    r = dist.get_rank() if dist.is_initialized() else -1
+    print(f"[{time.strftime('%H:%M:%S')} r{r}] {msg}", flush=True)
+
+
+def cuda_time(fn, iters, warmup, budget_s):
+    """Time fn. iters/warmup shrink so one stage takes about budget_s.
+
+    The shrunk counts come from the MAX first-call time over ranks, so every
+    rank runs the same number of calls (a per-rank count would desync the
+    collectives inside fn and hang).
+    """
+    fn()  # first call: lazy init, not representative
+    torch.cuda.synchronize()
+    t = time.time()
+    fn()
+    torch.cuda.synchronize()
+    t1 = torch.tensor([time.time() - t], device="cuda", dtype=torch.float64)
+    dist.all_reduce(t1, op=dist.ReduceOp.MAX)
+    t1 = t1.item()
+    n_iter = max(5, min(iters, int(budget_s / max(t1, 1e-6))))
+    n_warm = min(warmup, max(1, n_iter // 5))
+    log(f"  probe call {t1:.3f}s -> warmup {n_warm}, iters {n_iter}")
+    for _ in range(n_warm):
         fn()
     torch.cuda.synchronize()
     ts = []
-    for _ in range(iters):
+    last = time.time()
+    for it in range(n_iter):
+        if time.time() - last > 30:
+            log(f"  iter {it}/{n_iter}")
+            last = time.time()
         s, e = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         dist.barrier()
         s.record()
@@ -140,7 +168,7 @@ def cuda_time(fn, iters, warmup):
         torch.cuda.synchronize()
         ts.append(s.elapsed_time(e))
     ts.sort()
-    return {"p50_ms": ts[len(ts) // 2], "p90_ms": ts[int(len(ts) * 0.9)], "min_ms": ts[0]}
+    return {"p50_ms": ts[len(ts) // 2], "p90_ms": ts[int(len(ts) * 0.9)], "min_ms": ts[0], "iters": n_iter}
 
 
 def worker(rank, world, port, args, q):
@@ -164,8 +192,12 @@ def worker(rank, world, port, args, q):
         impls = {"nvidia_hook_dtensor": impl_nvidia_hook, "per_matrix_allreduce": impl_per_matrix_allreduce,
                  "coalesced": impl_coalesced, "dtensor_batched": impl_dtensor_batched, "ours_packed": ours}
         for name, fn in impls.items():
-            r = cuda_time(lambda: fn(ws, us), args.iters, args.warmup)
+            if args.impls and name not in args.impls:
+                continue
+            log(f"micro n={n} {name} start")
+            r = cuda_time(lambda: fn(ws, us), args.iters, args.warmup, args.budget_s)
             res["micro"].append({"n_matrices": n, "impl": name, **r})
+            log(f"micro n={n} {name} done {r}")
         del ws, us
         torch.cuda.empty_cache()
 
@@ -189,6 +221,10 @@ def worker(rank, world, port, args, q):
             "ours_packed": lambda: ours(mats, [p.grad for p in mats]),
         }
         for mode, stat_fn in modes.items():
+            if args.impls and mode != "none" and mode not in args.impls:
+                continue
+            log(f"e2e {cfg} {mode} start")
+
             def step():
                 loss = model(x)
                 loss.backward()
@@ -197,10 +233,11 @@ def worker(rank, world, port, args, q):
                 opt.step()
                 opt.zero_grad(set_to_none=True)
 
-            r = cuda_time(step, args.e2e_iters, args.warmup)
+            r = cuda_time(step, args.e2e_iters, args.warmup, args.budget_s)
             res["e2e"].append({"model": cfg, "n_matrices": len(mats), "mode": mode, **r,
                                "peak_mem_gb": torch.cuda.max_memory_allocated() / 2**30})
             torch.cuda.reset_peak_memory_stats()
+            log(f"e2e {cfg} {mode} done {res['e2e'][-1]}")
         del model, opt, mats
         torch.cuda.empty_cache()
 
@@ -214,18 +251,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--world", type=int, default=2)
     ap.add_argument("--port", type=int, default=29720)
-    ap.add_argument("--micro-n", type=int, nargs="+", default=[10, 50, 150, 400, 1000])
+    ap.add_argument("--micro-n", type=int, nargs="*", default=[10, 50, 150, 400, 1000])
     ap.add_argument("--iters", type=int, default=200)
     ap.add_argument("--warmup", type=int, default=20)
-    ap.add_argument("--models", nargs="+", default=["124m", "350m"])
+    ap.add_argument("--models", nargs="*", default=["124m", "350m"])
     ap.add_argument("--e2e-iters", type=int, default=50)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--seq", type=int, default=1024)
+    ap.add_argument("--budget-s", type=float, default=20.0,
+                    help="target seconds per timed stage; slow impls get fewer iters")
+    ap.add_argument("--impls", nargs="*", default=None, help="run only these impls/modes")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--i-know-it-hangs", action="store_true")
     a = ap.parse_args()
-    if not a.i_know_it_hangs:
-        sys.exit("bench_stats.py is known to hang (PITFALLS.md, D1). Pass --i-know-it-hangs to run it anyway.")
     ctx = mp.get_context("spawn")
     q = ctx.SimpleQueue()
     t0 = time.time()

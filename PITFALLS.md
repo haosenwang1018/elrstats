@@ -83,11 +83,30 @@ Status tags: **fixed**, **open**, **worked around**.
 
 ## D. Infrastructure
 
-### D1. Benchmark hung with 100% GPU and no output — open
+### D1. Benchmark "hung" with 100% GPU and no output — fixed (it was slow, not hung)
 - **Seen:** `bench/bench_stats.py` ran 24 min on 8 GPUs, and then also on 2 GPUs, at 100% util with no output. Killed.
-- **Cause:** Not found yet. A likely candidate is a collective-order mismatch (an NCCL hang shows as 100% util).
-- **What changed:** We added health criteria and an hourly watcher (`study/watch_remote.py`). The hang was found only because a human asked.
-- **To do:** Add per-stage progress prints with flush, `TORCH_NCCL_ASYNC_ERROR_HANDLING=1` and a timeout, then bisect by implementation.
+- **Cause:** No collective-order mismatch. The script ran a fixed 20 warmup + 200 timed calls per stage and printed nothing until the end. `nvidia_hook_dtensor` (per-matrix DTensor norms, several collectives per matrix) costs ~2.1 ms per matrix, so at 1000 matrices one call takes ~2.2 s and that stage alone takes ~8 min. Estimated whole default run from the measured per-call times: ~16 min micro + ~3 min e2e on 2 GPUs (~19 min), ~26 min on 8 GPUs (e2e steps are 3–4× slower over PCIe). The 8-GPU kill at 24 min fits this. The 2-GPU kill at 24 min is longer than the estimate; we did not check what else ran on the host then. 100% util came from the NCCL kernel that spins while a rank waits for its slower peer.
+- **Evidence (2026-10-30, a100d, torch 2.13.0+cu130, /data/exp077):** the old default micro sweep, with only flushed progress prints added, finished on 2 GPUs in 16 min with steady progress (n=1000 `nvidia_hook_dtensor`: p50 2054 ms, 200 iters, 7.5 min). Rank logs show the same stage order on every rank.
+- **Fix:** flushed per-stage and every-30-s progress prints; a per-stage time budget (`--budget-s`, default 20 s). The iteration count comes from the MAX probe time over ranks (`all_reduce MAX`), so every rank runs the same number of calls. Iteration counts are saved in the JSON. `--impls` runs a subset. The 10-min NCCL timeout stays; the `--i-know-it-hangs` guard is removed.
+- **Numbers** (`results/bench_w2.json`, `results/bench_w8.json`; wall 7.3 min on 2 GPUs, 8.5 min on 8). Micro, p50 ms per stats call, 1024×1024 fp32 matrices, Shard(0):
+
+| n matrices | GPUs | nvidia_hook_dtensor | per_matrix_allreduce | coalesced | dtensor_batched | ours_packed |
+|---|---|---|---|---|---|---|
+| 10 | 2 / 8 | 20.6 / 21.9 | 1.97 / 2.03 | 1.17 / 1.19 | 2.54 / 2.59 | 1.56 / 1.61 |
+| 150 | 2 / 8 | 319 / 331 | 29.1 / 31.5 | 15.2 / 15.7 | 31.1 / 31.7 | 20.8 / 21.4 |
+| 1000 | 2 / 8 | 2148 / 2236 | 200 / 208 | 99.9 / 107 | 206 / 212 | 139 / 144 |
+
+  E2E, FSDP2 + AdamW step p50 ms (batch 8×1024 per rank), stats every step:
+
+| model | GPUs | none | nvidia_hook_dtensor | dtensor_batched | ours_packed |
+|---|---|---|---|---|---|
+| 124m (62 mats) | 2 | 152.0 | 199.7 (+31%) | 158.1 (+4.0%) | 155.2 (+2.1%) |
+| 124m | 8 | 513.1 | 567.6 (+11%) | 522.6 (+1.9%) | 516.0 (+0.6%) |
+| 350m (122 mats) | 2 | 391.7 | 569.1 (+45%) | 400.5 (+2.2%) | 398.0 (+1.6%) |
+| 350m | 8 | 1453 | 1648 (+13%) | 1464 (+0.8%) | 1464 (+0.7%) |
+
+- **Read:** cost is set by per-call launch/latency, not by world size (2 vs 8 GPUs within 5%). `ours_packed` beats the per-matrix and DTensor paths but is ~1.4× slower than `coalesced` in the micro test: its local-sum loop launches ~9 small kernels per matrix. That is the next thing to optimize, not a correctness issue.
+- **Lesson:** "100% util, no output" is not proof of an NCCL hang. Print flushed progress first; estimate per-stage cost before blaming collectives.
 
 ### D2. gloo + torchrun hung on a host that cannot resolve its own hostname — worked around
 - **Fix:** Use `mp.spawn` with `MASTER_ADDR=127.0.0.1` and `GLOO_SOCKET_IFNAME=lo`.
@@ -113,11 +132,11 @@ Four reviewers read the repo before it was made public. Fixed:
 - **G2. Negative `dim` gave wrong sums.** `dim=-1` reduced every dimension. Now `dim` is normalized.
 - **G3. `async_op=True` returned two types.** It gave `(work, buf)` on many ranks but `MatrixStats` on one process. Now it always gives `(work_or_None, buf)`, plus `MatrixStats.from_buffer`.
 - **G4. Tests failed on macOS.** `GLOO_SOCKET_IFNAME="lo"` was hard-coded; macOS uses `lo0`. Now chosen by platform and only set if unset.
-- **G5. The benchmark could waste GPUs.** It now refuses to run without `--i-know-it-hangs` and sets a 10-minute NCCL timeout.
+- **G5. The benchmark could waste GPUs.** It got a `--i-know-it-hangs` guard and a 10-minute NCCL timeout. Update 2026-10-30: D1 was slowness, not a hang; the guard is removed, and a per-stage time budget plus progress prints replace it. The timeout stays.
 - **G6. The report claimed more than the data.** The Q4 verdict "mostly not supported" was wrong by our own pre-registered rule: k differs from the whole QKV in ≥ 3 layers in 6 of 16 runs (all no-WD runs). Q5 fails the |cos| rule in the two 4× lr runs. Seed noise "≤ 3%" held only for Q1–Q3a. Rewritten as "mixed" with exact numbers.
 - **Lesson:** after the final analysis, re-check every verdict against the pre-registered rule, run by run, not against the interim report.
 
 ## F. Still open
-- D1 benchmark hang (no cost numbers yet).
+- `ours_packed` local-sum loop: ~9 small kernels per matrix, ~1.4× slower than `coalesced` at 1000 matrices (D1 numbers). D1 itself is fixed.
 - Muon equilibrium formula: Kosson's form with β = 0.95 gives 13% below the measured AUS. Not derived.
 - Megatron's rank-local `[gate_r; up_r]` layout is not covered by `LogicalSpec`.
