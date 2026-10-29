@@ -49,6 +49,14 @@ aus = stats.aus(lr)                    # angular update size, atan2-based
 - `matrix_stats(..., async_op=True)` returns `(work, buf)`. Call `work.wait()` (if `work` is not None), then `MatrixStats.from_buffer(buf)`.
 - `group` must contain every rank of the params' meshes (default: the world group).
 - Manual (Megatron-style) TP shards pass their offset and size through `ParamEntry(tp_dim=..., tp_offset=..., tp_global=..., tp_size=...)`.
+- Megatron fused GLU `linear_fc1`: each TP rank stores `[gate_r; up_r]`, so the global row order is `[gate_0; up_0; gate_1; up_1; ...]`, not `[gate; up]`. Use `LogicalSpec.megatron_glu(ffn, tp)`, with `tp` = the TP size the weight was built with. `LogicalSpec.blocked(dim, sizes, names, repeats)` builds other tiled block layouts.
+
+```python
+fc1_spec = LogicalSpec.megatron_glu(ffn_hidden_size, tp)   # names: gate, up
+entry = ParamEntry("blk0.fc1", fc1.weight, spec=fc1_spec,  # local [gate_r; up_r]
+                   tp_dim=0, tp_offset=tp_rank * 2 * ffn_hidden_size // tp,
+                   tp_global=2 * ffn_hidden_size, tp_size=tp)
+```
 - `relative_scales(stats)` gives the per-matrix scale for a relative (LAMB / Hyperball-style) update with global norms.
 
 ## Install
@@ -65,7 +73,7 @@ python tests/test_stats_dist.py --world 4 --backend gloo
 python tests/test_stats_dist.py --world 8 --backend nccl
 ```
 
-The tests compare against an unsharded fp64 reference. Cases: 1-D Shard(0)/Shard(1)/Replicate, real FSDP2×TP on 2-D meshes, interleaved GQA QKV, 3-D MoE expert parallel, manual TP rows, fp32 and bf16. All pass on NCCL with world 2/4/8 (errors ≤ 2e-7). Tested with torch 2.13.0+cu130 on 8×A100 PCIe.
+The tests compare against an unsharded fp64 reference. Cases: 1-D Shard(0)/Shard(1)/Replicate, real FSDP2×TP on 2-D meshes, interleaved GQA QKV, Megatron `[gate_r; up_r]` GLU fc1 (DTensor Shard(0)/Shard(1) and manual TP), 3-D MoE expert parallel, manual TP rows, fp32 and bf16. All pass on NCCL with world 2/4/8 (errors ≤ 2e-7). Tested with torch 2.13.0+cu130 on 8×A100 PCIe.
 
 ## Reproducing the study
 
